@@ -2,12 +2,12 @@ const http = require("http");
 const https = require("https");
 
 const PORT = process.env.PORT || 3000;
-const WALLET_ADDRESS = process.env.PI_WALLET_ADDRESS || "";
+const WALLET_ADDRESS = (process.env.PI_WALLET_ADDRESS || "").trim();
 const UNLOCK_DATE = "2026-10-29T00:00:00Z";
 const CHECK_INTERVAL = 5 * 60 * 1000;
 
 let lastCheck = null;
-let lastResult = "Monitoring service started.";
+let lastResult = "Monitor starting.";
 let checkInProgress = false;
 
 function log(message) {
@@ -24,14 +24,24 @@ return;
 if (checkInProgress) return;
 checkInProgress = true;
 
-const address = encodeURIComponent(WALLET_ADDRESS);
-const url = "https://api.mainnet.minepi.com/accounts/${address}";
+const url =
+"https://api.mainnet.minepi.com/accounts/" +
+encodeURIComponent(WALLET_ADDRESS);
 
-https.get(url, (response) => {
-let data = "";
+const request = https.get(url, {
+headers: {
+Accept: "application/json",
+"User-Agent": "Pi-Unlock-Monitor/1.0"
+},
+timeout: 15000
+}, (response) => {
+let body = "";
 
 response.on("data", chunk => {
-  data += chunk;
+  body += chunk;
+  if (body.length > 4000) {
+    response.destroy();
+  }
 });
 
 response.on("end", () => {
@@ -39,68 +49,69 @@ response.on("end", () => {
 
   if (response.statusCode === 200) {
     try {
-      const account = JSON.parse(data);
+      const account = JSON.parse(body);
       lastResult =
-        `Public account lookup succeeded. Sequence: ${account.sequence}. ` +
-        "This does not confirm lockup expiration or transferable balance.";
+        "Public account lookup succeeded. Sequence: " +
+        String(account.sequence) +
+        ". This does not verify the Pi lockup or transferable balance.";
     } catch {
-      lastResult = "Account response could not be parsed.";
+      lastResult = "HTTP 200 received, but response was not valid JSON.";
     }
   } else {
-    lastResult = `Account lookup returned HTTP ${response.statusCode}.`;
+    let detail = body.replace(/\s+/g, " ").slice(0, 300);
+    lastResult =
+      `Pi API HTTP ${response.statusCode}: ` +
+      (detail || "No response body returned.");
   }
 
   log(lastResult);
   checkInProgress = false;
 });
 
-}).on("error", (error) => {
+});
+
+request.on("timeout", () => {
+request.destroy(new Error("Request timed out"));
+});
+
+request.on("error", error => {
 lastCheck = new Date().toISOString();
-lastResult = "Account lookup failed: ${error.message}";
+lastResult = "Account lookup failed: " + error.message;
 log(lastResult);
 checkInProgress = false;
 });
 }
 
 function checkUnlockDate() {
-const now = Date.now();
-const unlockTime = new Date(UNLOCK_DATE).getTime();
+const remaining =
+new Date(UNLOCK_DATE).getTime() - Date.now();
 
-if (now >= unlockTime) {
-log("Scheduled date reached. Verify unlock status in the official Pi Wallet.");
+if (remaining <= 0) {
+log("Scheduled date reached. Check unlock status in the official Pi Wallet.");
 } else {
-const daysLeft = Math.ceil((unlockTime - now) / 86400000);
-log("${daysLeft} day(s) remain until the scheduled date.");
+log(
+Math.ceil(remaining / 86400000) +
+" day(s) remain until the scheduled date."
+);
 }
 }
 
 const server = http.createServer((req, res) => {
 res.setHeader("Content-Type", "application/json; charset=utf-8");
 
-if (req.url === "/health") {
 res.writeHead(200);
 res.end(JSON.stringify({
 status: "running",
 service: "Pi Unlock Monitor",
-lastCheck,
-lastResult
-}));
-return;
-}
-
-res.writeHead(200);
-res.end(JSON.stringify({
-service: "Pi Unlock Monitor",
-status: "running",
 scheduledUnlockDate: UNLOCK_DATE,
 lastCheck,
 lastResult,
-warning: "Monitoring only. Actual lockup status must be verified in the official Pi Wallet."
+note: "This monitor cannot independently confirm lockup expiration or transfer Pi."
 }));
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-log("Web server listening on port ${PORT}");
+log("Monitor web server started on port " + PORT);
 checkUnlockDate();
 checkWallet();
 setInterval(() => {
