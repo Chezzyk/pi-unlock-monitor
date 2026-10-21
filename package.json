@@ -1,1 +1,12 @@
-
+{
+"name": "pi-unlock-monitor",
+"version": "1.0.0",
+"description": "Monitor Pi wallet activity and notify when funds may become transferable",
+"main": "index.js",
+"scripts": {
+"start": "node index.js"
+},
+"dependencies": {
+"dotenv": "^16.4.7"
+}
+}
